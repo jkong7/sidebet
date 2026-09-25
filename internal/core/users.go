@@ -22,12 +22,12 @@ type Group struct {
 
 type Member struct {
 	User
-	Coins      float64   `json:"coins"`
-	NetWorth   float64   `json:"net_worth"`
-	LastBonus  time.Time `json:"last_bonus"`
-	JoinedAt   time.Time `json:"joined_at"`
-	OpenBets   int       `json:"open_bets"`
-	Title      string    `json:"title,omitempty"`
+	Coins     float64   `json:"coins"`
+	NetWorth  float64   `json:"net_worth"`
+	LastBonus time.Time `json:"last_bonus"`
+	JoinedAt  time.Time `json:"joined_at"`
+	OpenBets  int       `json:"open_bets"`
+	Title     string    `json:"title,omitempty"`
 }
 
 func (s *Store) CreateUser(ctx context.Context, name string) (User, string, error) {

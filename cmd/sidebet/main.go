@@ -41,8 +41,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           (&web.Server{Store: store, Hub: hub.New(), Log: log, Secure: *secure, TrustProxy: *trustProxy,
+		Addr: *addr,
+		Handler: (&web.Server{Store: store, Hub: hub.New(), Log: log, Secure: *secure, TrustProxy: *trustProxy,
 			Limiter: web.NewLimiter(60, 20)}).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
