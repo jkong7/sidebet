@@ -69,11 +69,19 @@ func clientIP(r *http.Request, trustProxy bool) string {
 	return host
 }
 
-func (l *Limiter) Middleware(trustProxy bool, next http.Handler) http.Handler {
+func Middleware(session, anon *Limiter, trustProxy bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && !l.Allow(clientIP(r, trustProxy)) {
-			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "slow down, degen"})
-			return
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			ok := true
+			if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
+				ok = session.Allow(c.Value)
+			} else {
+				ok = anon.Allow(clientIP(r, trustProxy))
+			}
+			if !ok {
+				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "slow down, degen"})
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

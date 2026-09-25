@@ -30,7 +30,7 @@ func TestLimiter(t *testing.T) {
 
 func TestMiddlewareOnlyLimitsWrites(t *testing.T) {
 	l := NewLimiter(60, 1)
-	h := l.Middleware(false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	h := Middleware(l, l, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	do := func(method string) int {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(method, "/", nil)
@@ -43,5 +43,22 @@ func TestMiddlewareOnlyLimitsWrites(t *testing.T) {
 	}
 	if do("GET") != 200 {
 		t.Fatal("GET should not be limited")
+	}
+}
+
+func TestSharedIPUsersHaveSeparateBuckets(t *testing.T) {
+	h := Middleware(NewLimiter(60, 1), NewLimiter(60, 1), false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	do := func(cookie string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/", nil)
+		req.RemoteAddr = "10.0.0.1:5"
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: cookieName, Value: cookie})
+		}
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if do("alice") != 200 || do("bob") != 200 || do("alice") != 429 {
+		t.Fatal("users behind one campus IP should be limited separately")
 	}
 }

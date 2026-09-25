@@ -25,6 +25,7 @@ type Server struct {
 	Secure     bool
 	TrustProxy bool
 	Limiter    *Limiter
+	AnonLimit  *Limiter
 	Mailer     mail.Sender
 	DevCodes   bool
 }
@@ -56,7 +57,11 @@ func (s *Server) Routes() http.Handler {
 	s.pages(mux)
 	var h http.Handler = mux
 	if s.Limiter != nil {
-		h = s.Limiter.Middleware(s.TrustProxy, h)
+		anon := s.AnonLimit
+		if anon == nil {
+			anon = s.Limiter
+		}
+		h = Middleware(s.Limiter, anon, s.TrustProxy, h)
 	}
 	return headers(h)
 }

@@ -74,7 +74,7 @@ func main() {
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: (&web.Server{Store: store, Hub: hub.New(), Log: log, Secure: *secure, TrustProxy: *trustProxy,
-			Limiter: web.NewLimiter(60, 20), Mailer: mailer, DevCodes: devCodes}).Routes(),
+			Limiter: web.NewLimiter(60, 20), AnonLimit: web.NewLimiter(900, 300), Mailer: mailer, DevCodes: devCodes}).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
