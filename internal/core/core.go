@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -26,6 +27,11 @@ var (
 	ErrBroke        = errors.New("not enough coins")
 	ErrInvalidInput = errors.New("invalid input")
 	ErrTooSoon      = errors.New("bailout already claimed today")
+	ErrUnverified   = errors.New("verify a campus email first")
+	ErrNoPeople     = errors.New("campus markets can't be about individual people")
+	ErrBadCode      = errors.New("wrong or expired code")
+	ErrSlowDown     = errors.New("wait before requesting another code")
+	ErrBlocked      = errors.New("blocked by moderation")
 )
 
 const (
@@ -38,6 +44,9 @@ const (
 type Store struct {
 	db  *sql.DB
 	Now func() time.Time
+
+	adminMu sync.RWMutex
+	admins  map[int64]map[string]bool
 }
 
 func Open(path string) (*Store, error) {
@@ -51,7 +60,11 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, Now: time.Now}, nil
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{db: db, Now: time.Now, admins: map[int64]map[string]bool{}}, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
