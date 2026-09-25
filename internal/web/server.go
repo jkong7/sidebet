@@ -78,7 +78,7 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, core.ErrNotMember):
 		status, msg = http.StatusForbidden, "join the group first"
 	case errors.Is(err, core.ErrForbidden):
-		status, msg = http.StatusForbidden, "only the market creator can resolve it"
+		status, msg = http.StatusForbidden, "only the creator can settle this. the group owner can void it"
 	case errors.Is(err, core.ErrClosed):
 		status, msg = http.StatusConflict, "this market is closed"
 	case errors.Is(err, core.ErrBroke):

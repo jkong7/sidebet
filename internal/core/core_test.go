@@ -221,3 +221,23 @@ func TestTradesFeed(t *testing.T) {
 		t.Fatalf("markets list: %+v", list)
 	}
 }
+
+func TestGroupOwnerCanOnlyVoid(t *testing.T) {
+	f := setup(t)
+	m, err := f.s.CreateMarket(f.ctx, f.g.ID, f.bob.ID, NewMarket{Question: "Something mean about Cara", SubjectID: &f.cara.ID,
+		ClosesAt: f.now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.s.Buy(f.ctx, m.ID, f.bob.ID, true, 100)
+	if _, err := f.s.Resolve(f.ctx, m.ID, f.alice.ID, "yes"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("owner settling someone else's market: %v", err)
+	}
+	if _, err := f.s.Resolve(f.ctx, m.ID, f.cara.ID, "void"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-owner void: %v", err)
+	}
+	r, err := f.s.Resolve(f.ctx, m.ID, f.alice.ID, "void")
+	if err != nil || r.Status != "void" || f.coins(t, f.bob) != 1000 {
+		t.Fatalf("owner void: %+v %v bob=%v", r, err, f.coins(t, f.bob))
+	}
+}

@@ -340,7 +340,13 @@ func (s *Store) Resolve(ctx context.Context, marketID, userID int64, outcome str
 			return err
 		}
 		if m.CreatorID != userID {
-			return ErrForbidden
+			var owner int64
+			if err := tx.QueryRowContext(ctx, `SELECT created_by FROM groups WHERE id = ?`, m.GroupID).Scan(&owner); err != nil {
+				return err
+			}
+			if owner != userID || outcome != "void" {
+				return ErrForbidden
+			}
 		}
 		if m.Status != "open" {
 			return ErrClosed

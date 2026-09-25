@@ -396,6 +396,9 @@ async function renderMarket(soft) {
     ${open && m.creator_id === S.me?.id ? `<div class="panel"><h3>You made this bet. Settle it when it's decided.</h3>
       <div class="two"><button class="btn ghost" data-res="yes">It happened</button><button class="btn ghost" data-res="no">It didn't</button></div>
       <button class="btn ghost" data-res="void" style="margin-top:10px">Void and refund everyone</button></div>` : ""}
+    ${open && m.creator_id !== S.me?.id && S.group?.created_by === S.me?.id ? `<div class="panel"><h3>Group owner</h3>
+      <p class="muted small" style="margin:0 0 10px">Too far? Void it and everyone gets their coins back.</p>
+      <button class="btn ghost" data-res="void">Void this bet</button></div>` : ""}
     <div class="panel"><h3>Who's betting</h3><div class="list feed">${data.trades.length ? data.trades.map((t) => {
       const side = t.side.endsWith("yes") ? "yes" : "no";
       return `<div class="it"><div>${t.insider ? "🚨 " : ""}<b>${esc(t.user)}</b> ${t.side.startsWith("buy") ? `bet ${fmt(t.coins)} on <b class="${side}">${side.toUpperCase()}</b>` : `cashed out ${fmt(-t.coins)}`}</div>
