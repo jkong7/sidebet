@@ -3,6 +3,7 @@ package web
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,13 +27,32 @@ type client struct {
 	http *http.Client
 }
 
+type mailbox struct {
+	mu   sync.Mutex
+	sent map[string]string
+}
+
+func (m *mailbox) Send(_ context.Context, to, subject, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sent[to] = subject[:6]
+	return nil
+}
+
+var outbox = &mailbox{sent: map[string]string{}}
+
 func newServer(t *testing.T) *httptest.Server {
 	st, err := core.Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	srv := httptest.NewServer((&Server{Store: st, Hub: hub.New(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}).Routes())
+	if _, err := st.EnsureCampus(context.Background(), core.Campus{Code: "nu", Name: "Northwestern",
+		Domains: []string{"u.northwestern.edu"}, Admins: []string{"mod@u.northwestern.edu"}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer((&Server{Store: st, Hub: hub.New(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Mailer: outbox, DevCodes: true}).Routes())
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -86,10 +107,10 @@ func TestFullFlow(t *testing.T) {
 	}
 	bob.do("POST", base+"/join", nil, nil)
 
-	var board []core.Member
+	var board core.Board
 	alice.do("GET", base+"/leaderboard", nil, &board)
 	var bobID int64
-	for _, m := range board {
+	for _, m := range board.Top {
 		if m.Name == "Bob" {
 			bobID = m.ID
 		}
@@ -186,5 +207,99 @@ func TestEventsStream(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no event received")
+	}
+}
+
+func (c *client) verify(email, name string) int {
+	c.t.Helper()
+	if code := c.do("POST", "/api/verify/start", map[string]string{"email": email, "group": "nu"}, nil); code != 200 {
+		return code
+	}
+	outbox.mu.Lock()
+	code := outbox.sent[strings.ToLower(email)]
+	outbox.mu.Unlock()
+	return c.do("POST", "/api/verify/finish", map[string]string{"email": email, "code": code, "name": name}, nil)
+}
+
+func TestCampusFlow(t *testing.T) {
+	srv := newServer(t)
+	stu, mod, rando := newClient(t, srv), newClient(t, srv), newClient(t, srv)
+
+	var p preview
+	rando.do("GET", "/api/groups/nu", nil, &p)
+	if !p.Group.Campus() || p.Member {
+		t.Fatalf("public preview = %+v", p)
+	}
+	if code := rando.do("POST", "/api/verify/start", map[string]string{"email": "x@gmail.com", "group": "nu"}, nil); code != 400 {
+		t.Fatalf("gmail start = %d", code)
+	}
+	rando.do("POST", "/api/me", map[string]string{"name": "Rando"}, nil)
+	var joinErr struct {
+		Error  string
+		Verify bool
+	}
+	if code := rando.do("POST", "/api/groups/nu/join", nil, &joinErr); code != 403 || !joinErr.Verify {
+		t.Fatalf("unverified join = %d %+v", code, joinErr)
+	}
+
+	if code := stu.verify("Stu@u.northwestern.edu", "Stu"); code != 200 {
+		t.Fatalf("verify = %d", code)
+	}
+	var me meView
+	stu.do("GET", "/api/me", nil, &me)
+	if !me.Verified || me.Name != "Stu" {
+		t.Fatalf("me = %+v", me)
+	}
+	mod.verify("mod@u.northwestern.edu", "Mod")
+	for _, c := range []*client{stu, mod} {
+		if code := c.do("POST", "/api/groups/nu/join", nil, nil); code != 200 {
+			t.Fatalf("join = %d", code)
+		}
+	}
+	var m core.Market
+	var board core.Board
+	stu.do("GET", "/api/groups/nu/leaderboard", nil, &board)
+	modID := board.Top[0].ID
+	if board.Top[0].Name != "Mod" {
+		modID = board.Top[1].ID
+	}
+	if code := stu.do("POST", "/api/groups/nu/markets", map[string]any{"question": "Is Mod single?", "subject_id": modID,
+		"closes_in_hours": 24}, nil); code != 400 {
+		t.Fatalf("person market = %d", code)
+	}
+	if code := stu.do("POST", "/api/groups/nu/markets", map[string]any{"question": "Wildcats cover Saturday",
+		"closes_in_hours": 24}, &m); code != 201 {
+		t.Fatalf("create = %d", code)
+	}
+	path := fmt.Sprintf("/api/groups/nu/markets/%d", m.ID)
+	stu.do("POST", path+"/buy", map[string]any{"side": "yes", "amount": 100}, nil)
+	if code := stu.do("POST", path+"/resolve", map[string]string{"outcome": "yes"}, nil); code != 403 {
+		t.Fatalf("creator resolve on campus = %d", code)
+	}
+	if code := stu.do("POST", path+"/report", map[string]string{"reason": "test"}, nil); code != 200 {
+		t.Fatalf("report = %d", code)
+	}
+	if code := stu.do("GET", "/api/groups/nu/reports", nil, nil); code != 403 {
+		t.Fatalf("student reading reports = %d", code)
+	}
+	var queue []core.ReportedMarket
+	if code := mod.do("GET", "/api/groups/nu/reports", nil, &queue); code != 200 || len(queue) != 1 {
+		t.Fatalf("mod reports = %d %+v", code, queue)
+	}
+	if code := mod.do("POST", path+"/resolve", map[string]string{"outcome": "yes"}, nil); code != 200 {
+		t.Fatalf("mod resolve = %d", code)
+	}
+	rando.do("GET", "/api/groups/nu", nil, &p)
+	if p.Members != 2 {
+		t.Fatalf("members = %d", p.Members)
+	}
+
+	phone := newClient(t, srv)
+	if code := phone.verify("stu@u.northwestern.edu", ""); code != 200 {
+		t.Fatalf("second device login = %d", code)
+	}
+	phone.do("GET", "/api/me", nil, &me)
+	if me.Name != "Stu" {
+		t.Fatalf("second device user = %+v", me)
 	}
 }

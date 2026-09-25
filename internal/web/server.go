@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
 	"github.com/jkong7/sidebet/internal/core"
 	"github.com/jkong7/sidebet/internal/hub"
+	"github.com/jkong7/sidebet/internal/mail"
 )
 
 const cookieName = "sb"
@@ -23,6 +25,8 @@ type Server struct {
 	Secure     bool
 	TrustProxy bool
 	Limiter    *Limiter
+	Mailer     mail.Sender
+	DevCodes   bool
 }
 
 type ctxKey struct{}
@@ -31,6 +35,8 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/me", s.me)
 	mux.HandleFunc("POST /api/me", s.saveMe)
+	mux.HandleFunc("POST /api/verify/start", s.verifyStart)
+	mux.HandleFunc("POST /api/verify/finish", s.verifyFinish)
 	mux.HandleFunc("POST /api/groups", s.auth(s.createGroup))
 	mux.HandleFunc("GET /api/groups/{code}", s.groupPreview)
 	mux.HandleFunc("POST /api/groups/{code}/join", s.auth(s.join))
@@ -44,6 +50,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/groups/{code}/markets/{id}/buy", s.member(s.buy))
 	mux.HandleFunc("POST /api/groups/{code}/markets/{id}/sell", s.member(s.sell))
 	mux.HandleFunc("POST /api/groups/{code}/markets/{id}/resolve", s.member(s.resolve))
+	mux.HandleFunc("POST /api/groups/{code}/markets/{id}/report", s.member(s.report))
+	mux.HandleFunc("GET /api/groups/{code}/reports", s.member(s.reports))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 	s.pages(mux)
 	var h http.Handler = mux
@@ -78,7 +86,17 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, core.ErrNotMember):
 		status, msg = http.StatusForbidden, "join the group first"
 	case errors.Is(err, core.ErrForbidden):
-		status, msg = http.StatusForbidden, "only the creator can settle this. the group owner can void it"
+		status, msg = http.StatusForbidden, "you can't settle this one"
+	case errors.Is(err, core.ErrUnverified):
+		status, msg = http.StatusForbidden, "verify your school email first"
+	case errors.Is(err, core.ErrNoPeople):
+		status, msg = http.StatusBadRequest, "campus bets can't be about a specific person. bet on events, not people"
+	case errors.Is(err, core.ErrBlocked):
+		status, msg = http.StatusUnprocessableEntity, "that got blocked. no slurs, phone numbers or emails"
+	case errors.Is(err, core.ErrBadCode):
+		status, msg = http.StatusBadRequest, "wrong or expired code"
+	case errors.Is(err, core.ErrSlowDown):
+		status, msg = http.StatusTooManyRequests, "we just sent a code. check your inbox or wait a minute"
 	case errors.Is(err, core.ErrClosed):
 		status, msg = http.StatusConflict, "this market is closed"
 	case errors.Is(err, core.ErrBroke):
@@ -152,13 +170,96 @@ func groupFrom(ctx context.Context) core.Group {
 	return g
 }
 
+type meView struct {
+	core.User
+	Verified bool `json:"verified"`
+}
+
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	u, ok := s.currentUser(r)
 	if !ok {
 		writeJSON(w, http.StatusOK, nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, u)
+	email, _ := s.Store.Email(r.Context(), u.ID)
+	writeJSON(w, http.StatusOK, meView{User: u, Verified: email != ""})
+}
+
+func (s *Server) setSession(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: s.Secure,
+		SameSite: http.SameSiteLaxMode, MaxAge: 400 * 24 * 3600})
+}
+
+func (s *Server) verifyStart(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email string `json:"email"`
+		Group string `json:"group"`
+	}
+	if err := decode(r, &in); err != nil {
+		s.fail(w, err)
+		return
+	}
+	g, err := s.Store.GroupByCode(r.Context(), in.Group)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	email, err := core.NormalizeEmail(in.Email)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !g.Campus() || !core.DomainAllowed(email, g.Domains) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "use your @" + firstDomain(g) + " email"})
+		return
+	}
+	code, err := s.Store.StartVerification(r.Context(), email)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	subject, body := mail.CodeEmail(g.Name, code)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := s.Mailer.Send(ctx, email, subject, body); err != nil {
+		s.Log.Error("send code", "err", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "couldn't send the email. try again"})
+		return
+	}
+	out := map[string]any{"sent": true}
+	if s.DevCodes {
+		out["dev_code"] = code
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func firstDomain(g core.Group) string {
+	if len(g.Domains) > 0 {
+		return g.Domains[0]
+	}
+	return "school"
+}
+
+func (s *Server) verifyFinish(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+		Name  string `json:"name"`
+	}
+	if err := decode(r, &in); err != nil {
+		s.fail(w, err)
+		return
+	}
+	cur, _ := s.currentUser(r)
+	v, err := s.Store.FinishVerification(r.Context(), in.Email, in.Code, cur.ID, in.Name)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if v.Token != "" {
+		s.setSession(w, v.Token)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": meView{User: v.User, Verified: true}, "returning": v.Existing})
 }
 
 func (s *Server) saveMe(w http.ResponseWriter, r *http.Request) {
@@ -181,8 +282,7 @@ func (s *Server) saveMe(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: s.Secure,
-		SameSite: http.SameSiteLaxMode, MaxAge: 400 * 24 * 3600})
+	s.setSession(w, token)
 	writeJSON(w, http.StatusCreated, u)
 }
 
@@ -201,32 +301,42 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 type preview struct {
-	Group   core.Group   `json:"group"`
-	Members int          `json:"members"`
-	Member  bool         `json:"member"`
-	Hottest *core.Market `json:"hottest,omitempty"`
+	Group   core.Group    `json:"group"`
+	Members int           `json:"members"`
+	Member  bool          `json:"member"`
+	Role    string        `json:"role,omitempty"`
+	Hottest *core.Market  `json:"hottest,omitempty"`
+	Top     []core.Market `json:"top,omitempty"`
 }
 
 func (s *Server) buildPreview(ctx context.Context, g core.Group, viewer int64) (preview, error) {
 	p := preview{Group: g}
-	board, err := s.Store.Leaderboard(ctx, g.ID)
+	n, err := s.Store.MemberCount(ctx, g.ID)
 	if err != nil {
 		return p, err
 	}
-	p.Members = len(board)
-	for _, m := range board {
-		if m.ID == viewer {
-			p.Member = true
+	p.Members = n
+	if viewer != 0 {
+		if role, err := s.Store.Role(ctx, g.ID, viewer); err == nil {
+			p.Member, p.Role = true, role
 		}
 	}
 	list, err := s.Store.Markets(ctx, g.ID, 0)
 	if err != nil {
 		return p, err
 	}
+	var open []core.Market
 	for i := range list {
-		if list[i].Status == "open" && (p.Hottest == nil || list[i].Volume > p.Hottest.Volume) {
-			p.Hottest = &list[i]
+		if list[i].Status == "open" {
+			open = append(open, list[i])
+			if p.Hottest == nil || list[i].Volume > p.Hottest.Volume {
+				p.Hottest = &list[i]
+			}
 		}
+	}
+	if g.Campus() {
+		sort.SliceStable(open, func(i, j int) bool { return open[i].Volume > open[j].Volume })
+		p.Top = open[:min(5, len(open))]
 	}
 	return p, nil
 }
@@ -255,6 +365,10 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r.Context())
 	already, _ := s.Store.IsMember(r.Context(), g.ID, u.ID)
 	if err := s.Store.Join(r.Context(), g.ID, u.ID); err != nil {
+		if errors.Is(err, core.ErrUnverified) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "verify your @" + firstDomain(g) + " email first", "verify": true})
+			return
+		}
 		s.fail(w, err)
 		return
 	}
@@ -421,12 +535,51 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) leaderboard(w http.ResponseWriter, r *http.Request) {
-	board, err := s.Store.Leaderboard(r.Context(), groupFrom(r.Context()).ID)
+	g := groupFrom(r.Context())
+	limit := 500
+	if g.Campus() {
+		limit = 100
+	}
+	board, err := s.Store.Board(r.Context(), g.ID, userFrom(r.Context()).ID, limit)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, board)
+}
+
+func (s *Server) report(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Reason string }
+	m, err := s.marketInGroup(r)
+	if err == nil {
+		err = decode(r, &in)
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	n, err := s.Store.Report(r.Context(), m.ID, userFrom(r.Context()).ID, in.Reason)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.Log.Warn("market reported", "market", m.ID, "reports", n, "reason", in.Reason)
+	writeJSON(w, http.StatusOK, map[string]int{"reports": n})
+}
+
+func (s *Server) reports(w http.ResponseWriter, r *http.Request) {
+	g, u := groupFrom(r.Context()), userFrom(r.Context())
+	role, err := s.Store.Role(r.Context(), g.ID, u.ID)
+	if err != nil || (role != "admin" && g.CreatedBy != u.ID) {
+		s.fail(w, core.ErrForbidden)
+		return
+	}
+	list, err := s.Store.Reported(r.Context(), g.ID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (s *Server) feed(w http.ResponseWriter, r *http.Request) {
