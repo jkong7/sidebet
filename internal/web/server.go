@@ -17,10 +17,12 @@ import (
 const cookieName = "sb"
 
 type Server struct {
-	Store  *core.Store
-	Hub    *hub.Hub
-	Log    *slog.Logger
-	Secure bool
+	Store      *core.Store
+	Hub        *hub.Hub
+	Log        *slog.Logger
+	Secure     bool
+	TrustProxy bool
+	Limiter    *Limiter
 }
 
 type ctxKey struct{}
@@ -44,7 +46,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/groups/{code}/markets/{id}/resolve", s.member(s.resolve))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 	s.pages(mux)
-	return headers(mux)
+	var h http.Handler = mux
+	if s.Limiter != nil {
+		h = s.Limiter.Middleware(s.TrustProxy, h)
+	}
+	return headers(h)
 }
 
 func headers(next http.Handler) http.Handler {

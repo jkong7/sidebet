@@ -27,6 +27,7 @@ func main() {
 	addr := flag.String("addr", env("ADDR", ":8090"), "listen address")
 	dbPath := flag.String("db", env("DB_PATH", "sidebet.db"), "SQLite database path")
 	secure := flag.Bool("secure", os.Getenv("SECURE") == "1", "set Secure on cookies (behind HTTPS)")
+	trustProxy := flag.Bool("trust-proxy", os.Getenv("TRUST_PROXY") == "1", "read client IPs from proxy headers")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
@@ -41,7 +42,8 @@ func main() {
 	defer stop()
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           (&web.Server{Store: store, Hub: hub.New(), Log: log, Secure: *secure}).Routes(),
+		Handler:           (&web.Server{Store: store, Hub: hub.New(), Log: log, Secure: *secure, TrustProxy: *trustProxy,
+			Limiter: web.NewLimiter(60, 20)}).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
