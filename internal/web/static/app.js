@@ -68,6 +68,7 @@ window.addEventListener("popstate", route);
 async function loadMe() {
   if (S.me) return S.me;
   try { S.me = await api("GET", "/api/me"); } catch { S.me = null; }
+  if (S.me && !S.me.id) S.me = null;
   return S.me;
 }
 
@@ -276,7 +277,7 @@ function boardHTML(board) {
   return `<div class="panel list">${board.map((m, i) => `<div class="it">
     <span class="rank">${i + 1}</span>
     <span class="who"><b>${esc(m.name)}${m.id === S.me?.id ? " (you)" : ""}</b>
-      ${m.title ? `<span class="title-tag ${m.title === "Top Degen" ? "top" : "bad"}">${m.title === "Top Degen" ? "👑 " : "💀 "}${m.title}</span>` : `<span class="muted small">${m.open_bets} open bets</span>`}</span>
+      ${m.title ? `<span class="title-tag ${m.title === "Top Degen" ? "top" : "bad"}">${m.title}</span>` : `<span class="muted small">${m.open_bets} open bet${m.open_bets === 1 ? "" : "s"}</span>`}</span>
     <span class="num">${fmt(m.net_worth)}<div class="muted small">net worth</div></span></div>`).join("")}</div>`;
 }
 
@@ -333,20 +334,20 @@ function newMarket() {
 }
 
 function chartSVG(points, status) {
-  const w = 600, h = 150, pad = 6;
-  const t0 = new Date(points[0].at).getTime();
-  const t1 = Math.max(Date.now(), new Date(points[points.length - 1].at).getTime(), t0 + 1);
-  const x = (t) => pad + ((new Date(t).getTime() - t0) / (t1 - t0)) * (w - pad * 2);
+  const w = 600, h = 150, pad = 8;
+  const n = points.length + (status === "open" ? 1 : 0);
+  const x = (i) => pad + (n <= 1 ? 0 : (i / (n - 1)) * (w - pad * 2));
   const y = (p) => pad + (1 - p) * (h - pad * 2);
-  let d = `M${x(points[0].at)},${y(points[0].chance)}`;
-  for (let i = 1; i < points.length; i++) d += ` H${x(points[i].at)} V${y(points[i].chance)}`;
-  if (status === "open") d += ` H${x(t1)}`;
+  let d = `M${x(0)},${y(points[0].chance)}`;
+  for (let i = 1; i < points.length; i++) d += ` L${x(i)},${y(points[i].chance)}`;
   const last = points[points.length - 1].chance;
+  if (status === "open") d += ` L${x(n - 1)},${y(last)}`;
   const col = last >= 0.5 ? "var(--yes)" : "var(--no)";
-  return `<svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="Odds history">
-    <line x1="0" x2="${w}" y1="${y(0.5)}" y2="${y(0.5)}" stroke="var(--line)" stroke-dasharray="4 6"/>
-    <path d="${d} V${h} H${x(points[0].at)} Z" fill="${col}" opacity=".08"/>
-    <path d="${d}" fill="none" stroke="${col}" stroke-width="3" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+  const end = status === "open" ? n - 1 : points.length - 1;
+  return `<svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="Odds after each bet">
+    <line x1="0" x2="${w}" y1="${y(0.5)}" y2="${y(0.5)}" stroke="var(--line)" stroke-dasharray="4 6" vector-effect="non-scaling-stroke"/>
+    <path d="${d} L${x(end)},${h} L${x(0)},${h} Z" fill="${col}" opacity=".1"/>
+    <path d="${d}" fill="none" stroke="${col}" stroke-width="3" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 
 let tradeState = { side: "yes", amount: 50 };

@@ -67,6 +67,10 @@ func TestFullFlow(t *testing.T) {
 	if code := alice.do("POST", "/api/groups", map[string]string{"name": "x"}, nil); code != 401 {
 		t.Fatalf("anonymous create group = %d", code)
 	}
+	var anon *core.User
+	if code := alice.do("GET", "/api/me", nil, &anon); code != 200 || anon != nil {
+		t.Fatalf("anonymous /api/me = %d %+v", code, anon)
+	}
 	var me core.User
 	alice.do("POST", "/api/me", map[string]string{"name": "Alice"}, &me)
 	bob.do("POST", "/api/me", map[string]string{"name": "Bob"}, nil)

@@ -27,7 +27,7 @@ type ctxKey struct{}
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/me", s.auth(s.me))
+	mux.HandleFunc("GET /api/me", s.me)
 	mux.HandleFunc("POST /api/me", s.saveMe)
 	mux.HandleFunc("POST /api/groups", s.auth(s.createGroup))
 	mux.HandleFunc("GET /api/groups/{code}", s.groupPreview)
@@ -147,7 +147,12 @@ func groupFrom(ctx context.Context) core.Group {
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, userFrom(r.Context()))
+	u, ok := s.currentUser(r)
+	if !ok {
+		writeJSON(w, http.StatusOK, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
 }
 
 func (s *Server) saveMe(w http.ResponseWriter, r *http.Request) {
