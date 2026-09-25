@@ -1,0 +1,4 @@
+/sidebet
+*.db
+*.db-*
+/bin/
