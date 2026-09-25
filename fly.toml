@@ -1,0 +1,30 @@
+app = "sidebet"
+primary_region = "ord"
+
+[build]
+
+[env]
+  ADDR = ":8080"
+  DB_PATH = "/data/sidebet.db"
+  SECURE = "1"
+  TRUST_PROXY = "1"
+
+[[mounts]]
+  source = "sidebet_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "3s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
