@@ -76,6 +76,9 @@ func (s *Store) CreateMarket(ctx context.Context, groupID, userID int64, in NewM
 	if err != nil {
 		return Market{}, err
 	}
+	if !Allowed(q) {
+		return Market{}, ErrBlocked
+	}
 	now := s.Now()
 	if !in.ClosesAt.After(now) || in.ClosesAt.After(now.AddDate(1, 0, 0)) {
 		return Market{}, ErrInvalidInput
@@ -84,6 +87,13 @@ func (s *Store) CreateMarket(ctx context.Context, groupID, userID int64, in NewM
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		if ok, err := memberTx(ctx, tx, groupID, userID); err != nil || !ok {
 			return firstErr(err, ErrNotMember)
+		}
+		var kind string
+		if err := tx.QueryRowContext(ctx, `SELECT kind FROM groups WHERE id = ?`, groupID).Scan(&kind); err != nil {
+			return err
+		}
+		if kind == "campus" && in.SubjectID != nil {
+			return ErrNoPeople
 		}
 		if in.SubjectID != nil {
 			if ok, err := memberTx(ctx, tx, groupID, *in.SubjectID); err != nil || !ok {
@@ -339,14 +349,19 @@ func (s *Store) Resolve(ctx context.Context, marketID, userID int64, outcome str
 		if err != nil {
 			return err
 		}
-		if m.CreatorID != userID {
-			var owner int64
-			if err := tx.QueryRowContext(ctx, `SELECT created_by FROM groups WHERE id = ?`, m.GroupID).Scan(&owner); err != nil {
-				return err
-			}
-			if owner != userID || outcome != "void" {
+		var owner int64
+		var kind string
+		if err := tx.QueryRowContext(ctx, `SELECT created_by, kind FROM groups WHERE id = ?`, m.GroupID).Scan(&owner, &kind); err != nil {
+			return err
+		}
+		if kind == "campus" {
+			var role string
+			if err := tx.QueryRowContext(ctx, `SELECT role FROM members WHERE group_id = ? AND user_id = ?`, m.GroupID, userID).
+				Scan(&role); err != nil || role != "admin" {
 				return ErrForbidden
 			}
+		} else if m.CreatorID != userID && (owner != userID || outcome != "void") {
+			return ErrForbidden
 		}
 		if m.Status != "open" {
 			return ErrClosed
@@ -450,4 +465,29 @@ func (s *Store) Leaderboard(ctx context.Context, groupID int64) ([]Member, error
 		out[len(out)-1].Title = "Down Bad"
 	}
 	return out, nil
+}
+
+type Board struct {
+	Top     []Member `json:"top"`
+	Me      *Member  `json:"me,omitempty"`
+	Members int      `json:"members"`
+}
+
+func (s *Store) Board(ctx context.Context, groupID, viewerID int64, limit int) (Board, error) {
+	all, err := s.Leaderboard(ctx, groupID)
+	if err != nil {
+		return Board{}, err
+	}
+	b := Board{Members: len(all), Top: []Member{}}
+	for i := range all {
+		all[i].Rank = i + 1
+		if i < limit {
+			b.Top = append(b.Top, all[i])
+		}
+		if all[i].ID == viewerID {
+			me := all[i]
+			b.Me = &me
+		}
+	}
+	return b, nil
 }
