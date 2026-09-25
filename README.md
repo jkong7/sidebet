@@ -20,6 +20,29 @@ Marcus orders DoorDash 5+ times this week   74%
 
 Play money only. No deposits, no withdrawals, no cash prizes.
 
+## Campus Markets
+
+A campus is a special group anyone at one school can join by verifying their school email. The default is Northwestern at `/g/nu`.
+
+- **Verification**: a 6-digit code emailed to the school address. Codes are hashed, expire in 10 minutes, lock after 5 wrong tries, and can be resent once a minute. Verifying the same email on a new device logs into the same account.
+- **Public preview**: anyone with the link sees the hottest markets and odds; betting requires verification.
+- **Events, not people**: campus markets can't target an individual, and question text is filtered for slurs and contact info.
+- **Mods settle**: only campus moderators (`CAMPUS_ADMINS`) can resolve or void campus markets. Anyone can report a market; mods get a report queue in the app.
+- **Leaderboard**: top 100 plus your own rank out of everyone on campus.
+- **Rate limits**: per signed-in session, with a larger per-IP bucket for signup, so a whole dorm on one Wi-Fi IP doesn't throttle itself.
+
+| Env | |
+| --- | --- |
+| `CAMPUS` | `code|Name|domain1,domain2` (default `nu|Northwestern|u.northwestern.edu,northwestern.edu`) |
+| `CAMPUS_ADMINS` | comma-separated moderator emails |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | email delivery for codes (any SMTP provider: Resend, Postmark, SES) |
+| `DEV_CODES=1` | return codes in the API response for local testing; ignored when `SECURE=1` |
+
+```sh
+DEV_CODES=1 CAMPUS_ADMINS=you@u.northwestern.edu make run
+python3 scripts/seed_campus.py http://127.0.0.1:8090 you@u.northwestern.edu
+```
+
 ## Stack
 
 Go standard library HTTP server, SQLite (pure Go, WAL), SSE, vanilla JS. One binary with the frontend embedded.
@@ -45,6 +68,7 @@ make test
 ```sh
 fly launch --no-deploy
 fly volumes create sidebet_data --size 1
+fly secrets set SMTP_HOST=... SMTP_USER=... SMTP_PASS=... MAIL_FROM="sidebet <codes@yourdomain>" CAMPUS_ADMINS=you@u.northwestern.edu
 fly deploy
 ```
 
