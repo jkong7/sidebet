@@ -1,5 +1,14 @@
 const app = document.getElementById("app");
-const S = { me: null, group: null, code: null, tab: "markets", es: null, esCode: null, members: [], coins: null };
+const S = { me: null, group: null, role: "", code: null, tab: "markets", es: null, esCode: null, members: [], coins: null };
+const CAMPUS_EXAMPLES = [
+  "Wildcats cover the spread this Saturday",
+  "Dillo Day headliner is announced before March 1",
+  "It snows in Evanston before Halloween",
+  "ASG's dining referendum passes",
+  "Norris Starbucks line is over 20 people at 10am Monday",
+  "The Lakefill freezes enough to walk on by February",
+];
+const campus = () => S.group && S.group.kind === "campus";
 
 const EXAMPLES = [
   "Does Jake text her back by Friday?",
@@ -113,6 +122,7 @@ function home() {
       <h1>Put odds on your <em>friends.</em></h1>
       <p>Prediction markets for your group chat. Bet play money on each other's lives, watch the odds move live, and find out who really believes in you.</p>
       <button class="btn" id="start">Start a group</button>
+      <a class="btn ghost" data-link href="/g/nu" style="margin-top:10px">At Northwestern? Campus markets →</a>
       <div class="ticker">
         <div class="row"><span>Jake texts her back by Friday</span><b class="no">18%</b></div>
         <div class="row"><span>Priya gets the Stripe offer</span><b class="yes">74%</b></div>
@@ -187,8 +197,9 @@ async function groupPage(code) {
   try { p = await api("GET", `/api/groups/${code}`); }
   catch { app.innerHTML = `<div class="wrap"><div class="empty"><b>That group doesn't exist.</b>Maybe the link got cooked.</div><a class="btn ghost" data-link href="/">Go home</a></div>`; return; }
   S.group = p.group;
+  S.role = p.role || "";
   document.title = `${p.group.name} · sidebet`;
-  if (!p.member) return joinScreen(p);
+  if (!p.member) return p.group.kind === "campus" ? campusJoin(p) : joinScreen(p);
   connect(code);
   await renderGroup();
   if (new URLSearchParams(location.search).get("new")) {
@@ -216,19 +227,70 @@ function joinScreen(p) {
 }
 
 function myCoins(board) {
-  const me = board.find((m) => m.id === S.me?.id);
-  return me ? me.coins : 0;
+  return board.me ? board.me.coins : 0;
+}
+
+function campusJoin(p) {
+  const top = p.top || [];
+  const domain = (p.group.domains || [])[0] || "school";
+  app.innerHTML = `<div class="wrap"><div class="hero">
+    <div class="brand" style="font-size:1.2rem">sidebet · campus</div>
+    <h1>Kalshi for <em>${esc(p.group.name)}.</em></h1>
+    <p>${p.members.toLocaleString()} ${p.members === 1 ? "student is" : "students are"} betting play money on what happens on campus. Odds move live. Winners run the leaderboard.</p>
+    <div class="ticker">${top.length ? top.map((m) => `<div class="row"><span>${esc(m.question)}</span><b class="${m.chance >= 0.5 ? "yes" : "no"}">${pct(m.chance)}%</b></div>`).join("")
+      : `<div class="row"><span>First markets drop soon</span><b class="yes">—</b></div>`}</div>
+    <button class="btn" id="verify">Get in with your @${esc(domain)} email</button>
+    <p class="small muted" style="margin-top:14px">Verified students only. 1,000 coins to start. Play money, no cash. Bets are about events, never about individual people.</p>
+  </div></div>`;
+  document.getElementById("verify").onclick = () => verifySheet(p.group);
+}
+
+function verifySheet(group) {
+  const domain = (group.domains || [])[0] || "school";
+  let email = "";
+  sheet(`<h2>Verify you're a student</h2><p class="muted small">We'll email a 6-digit code to your school address. It's never shown to anyone.</p>
+    <div id="step1"><input class="field" id="em" type="email" inputmode="email" autocomplete="email" placeholder="you@${esc(domain)}">
+    <div style="height:12px"></div><button class="btn" id="send">Send code</button></div>
+    <div id="step2" style="display:none"><input class="field" id="cd" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code">
+    <div id="namewrap" style="margin-top:10px"><input class="field" id="nm" maxlength="24" placeholder="Name on the leaderboard" autocomplete="nickname"></div>
+    <div style="height:12px"></div><button class="btn" id="finish">Verify and join</button><p class="small muted" id="hint"></p></div>`, (el, close) => {
+    const em = el.querySelector("#em");
+    em.focus();
+    if (S.me) el.querySelector("#namewrap").style.display = "none";
+    el.querySelector("#send").onclick = async () => {
+      try {
+        const r = await api("POST", "/api/verify/start", { email: em.value, group: group.code });
+        email = em.value;
+        el.querySelector("#step1").style.display = "none";
+        el.querySelector("#step2").style.display = "block";
+        el.querySelector("#hint").textContent = r.dev_code ? `Dev mode code: ${r.dev_code}` : `Sent to ${email}. Check spam if it's not there in a minute.`;
+        el.querySelector("#cd").focus();
+      } catch (e) { toast(e.message, true); }
+    };
+    el.querySelector("#finish").onclick = async () => {
+      try {
+        const r = await api("POST", "/api/verify/finish", { email, code: el.querySelector("#cd").value, name: el.querySelector("#nm").value });
+        S.me = r.user;
+        await api("POST", `/api/groups/${group.code}/join`);
+        close();
+        toast(r.returning ? "Welcome back." : "You're in. 1,000 coins. Don't fumble them.");
+        groupPage(group.code);
+      } catch (e) { toast(e.message, true); }
+    };
+  });
 }
 
 async function renderGroup(soft, ev) {
   const code = S.code;
   const [markets, board] = await Promise.all([api("GET", `/api/groups/${code}/markets`), api("GET", `/api/groups/${code}/leaderboard`)]);
-  S.members = board;
+  S.members = board.top;
+  S.board = board;
   S.coins = myCoins(board);
   const flashId = ev && ev.data && (ev.data.market?.id || ev.data.id);
   let body = "";
   if (S.tab === "markets") body = marketsHTML(markets, flashId);
   else if (S.tab === "board") body = boardHTML(board);
+  else if (S.tab === "mod") body = `<div class="panel list" id="mod"><div class="muted small">Loading…</div></div>`;
   else body = `<div class="panel feed list" id="feed"><div class="muted small">Loading…</div></div>`;
   const scroll = window.scrollY;
   app.innerHTML = `<div class="wrap">
@@ -239,9 +301,10 @@ async function renderGroup(soft, ev) {
       <button data-tab="markets" class="${S.tab === "markets" ? "on" : ""}">Bets</button>
       <button data-tab="board" class="${S.tab === "board" ? "on" : ""}">Leaderboard</button>
       <button data-tab="feed" class="${S.tab === "feed" ? "on" : ""}"><span class="live-dot"></span>Live</button>
+      ${S.role === "admin" ? `<button data-tab="mod" class="${S.tab === "mod" ? "on" : ""}">Mod</button>` : ""}
     </div>
     ${body}
-    <div style="display:flex;gap:10px;margin-top:16px"><button class="btn ghost" id="inv">Invite friends</button></div>
+    <div style="display:flex;gap:10px;margin-top:16px"><button class="btn ghost" id="inv">${campus() ? "Send to a friend on campus" : "Invite friends"}</button></div>
   </div>
   <button class="btn fab" id="new">+ New bet</button>`;
   if (soft) window.scrollTo(0, scroll);
@@ -254,6 +317,23 @@ async function renderGroup(soft, ev) {
     catch (e) { toast(e.message, true); }
   };
   if (S.tab === "feed") loadFeed();
+  if (S.tab === "mod") loadMod();
+}
+
+async function loadMod() {
+  const el = document.getElementById("mod");
+  try {
+    const list = await api("GET", `/api/groups/${S.code}/reports`);
+    el.innerHTML = list.length ? list.map((r) => `<div class="it"><div class="who"><a data-link href="/g/${S.code}/m/${r.market.id}"><b>${esc(r.market.question)}</b></a>
+      <div class="muted small">${r.reports} report${r.reports === 1 ? "" : "s"}: ${esc(r.reasons.join(" · "))}</div></div>
+      <button class="btn ghost" style="width:auto;padding:8px 12px" data-void="${r.market.id}">Void</button></div>`).join("")
+      : `<div class="empty"><b>Queue is clean.</b>Reported markets show up here.</div>`;
+    el.querySelectorAll("[data-void]").forEach((b) => (b.onclick = async () => {
+      if (!confirm("Void this market and refund everyone?")) return;
+      try { await api("POST", `/api/groups/${S.code}/markets/${b.dataset.void}/resolve`, { outcome: "void" }); toast("Voided."); loadMod(); }
+      catch (e) { toast(e.message, true); }
+    }));
+  } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 function marketsHTML(list, flashId) {
@@ -274,11 +354,14 @@ function marketsHTML(list, flashId) {
 }
 
 function boardHTML(board) {
-  return `<div class="panel list">${board.map((m, i) => `<div class="it">
-    <span class="rank">${i + 1}</span>
+  const inTop = board.me && board.top.some((m) => m.id === board.me.id);
+  const meRow = board.me && !inTop ? `<div class="panel list" style="margin-top:10px"><div class="it"><span class="rank">${board.me.rank}</span>
+    <span class="who"><b>You</b><span class="muted small">of ${board.members.toLocaleString()}</span></span><span class="num">${fmt(board.me.net_worth)}</span></div></div>` : "";
+  return `<div class="panel list">${board.top.map((m, i) => `<div class="it">
+    <span class="rank">${m.rank || i + 1}</span>
     <span class="who"><b>${esc(m.name)}${m.id === S.me?.id ? " (you)" : ""}</b>
       ${m.title ? `<span class="title-tag ${m.title === "Top Degen" ? "top" : "bad"}">${m.title}</span>` : `<span class="muted small">${m.open_bets} open bet${m.open_bets === 1 ? "" : "s"}</span>`}</span>
-    <span class="num">${fmt(m.net_worth)}<div class="muted small">net worth</div></span></div>`).join("")}</div>`;
+    <span class="num">${fmt(m.net_worth)}<div class="muted small">net worth</div></span></div>`).join("")}</div>${meRow}`;
 }
 
 async function loadFeed() {
@@ -295,7 +378,7 @@ async function loadFeed() {
 
 async function invite() {
   const url = `${location.origin}/g/${S.code}`;
-  const text = `Join ${S.group.name} on sidebet. We're putting odds on each other.`;
+  const text = campus() ? `${S.group.name} has a prediction market now. Verify your school email and bet on campus.` : `Join ${S.group.name} on sidebet. We're putting odds on each other.`;
   if (navigator.share) {
     try { await navigator.share({ title: "sidebet", text, url }); return; } catch { }
   }
@@ -306,11 +389,12 @@ async function invite() {
 function newMarket() {
   const others = S.members.filter((m) => m.id !== S.me?.id);
   let closes = 72, subject = null;
-  sheet(`<h2>New bet</h2><p class="muted small">Ask a yes/no question about someone in the group.</p>
+  const subjects = campus() ? "" : `<label class="l">Who's it about?</label>
+    <div class="seg" id="subj"><button data-id="" class="on">Nobody specific</button>${others.map((m) => `<button data-id="${m.id}">${esc(m.name)}</button>`).join("")}${S.me ? `<button data-id="${S.me.id}">Me (bold)</button>` : ""}</div>`;
+  sheet(`<h2>New bet</h2><p class="muted small">${campus() ? "A yes/no question about something happening on campus. Events, not people. A campus mod settles it." : "Ask a yes/no question about someone in the group."}</p>
     <label class="l">The question</label>
-    <input class="field" id="q" maxlength="140" placeholder="${esc(pick(EXAMPLES))}">
-    <label class="l">Who's it about?</label>
-    <div class="seg" id="subj"><button data-id="" class="on">Nobody specific</button>${others.map((m) => `<button data-id="${m.id}">${esc(m.name)}</button>`).join("")}${S.me ? `<button data-id="${S.me.id}">Me (bold)</button>` : ""}</div>
+    <input class="field" id="q" maxlength="140" placeholder="${esc(pick(campus() ? CAMPUS_EXAMPLES : EXAMPLES))}">
+    ${subjects}
     <label class="l">Betting closes</label>
     <div class="seg" id="close"><button data-h="6">Tonight</button><button data-h="24">Tomorrow</button><button data-h="72" class="on">3 days</button><button data-h="168">1 week</button><button data-h="720">1 month</button></div>
     <div style="height:16px"></div><button class="btn" id="mkgo">Drop it in the group</button>`, (el, close) => {
@@ -363,9 +447,13 @@ async function renderMarket(soft) {
     app.innerHTML = `<div class="wrap"><div class="empty"><b>Bet not found.</b></div><a class="btn ghost" data-link href="/g/${code}">Back</a></div>`;
     return;
   }
-  if (!S.group) S.group = (await api("GET", `/api/groups/${code}`)).group;
+  if (!S.group || S.group.code !== code) {
+    const p = await api("GET", `/api/groups/${code}`);
+    S.group = p.group;
+    S.role = p.role || "";
+  }
   connect(code);
-  S.members = board;
+  S.members = board.top;
   S.coins = myCoins(board);
   const m = data.market;
   document.title = `${pct(m.chance)}% · ${m.question}`;
@@ -393,10 +481,10 @@ async function renderMarket(soft) {
       <div class="list">${mine.yes > 0.01 ? `<div class="it"><span><b class="yes">${fmt(mine.yes)} YES</b> shares</span>${open ? `<button class="btn ghost" style="width:auto;padding:8px 12px" data-sell="yes" data-sh="${mine.yes}">Cash out</button>` : ""}</div>` : ""}
       ${mine.no > 0.01 ? `<div class="it"><span><b class="no">${fmt(mine.no)} NO</b> shares</span>${open ? `<button class="btn ghost" style="width:auto;padding:8px 12px" data-sell="no" data-sh="${mine.no}">Cash out</button>` : ""}</div>` : ""}</div>
       <div class="muted small" style="margin-top:6px">Worth ${fmt(mine.value)} now · pays ${fmt(Math.max(mine.yes, mine.no))} if you're right</div></div>` : ""}
-    ${open && m.creator_id === S.me?.id ? `<div class="panel"><h3>You made this bet. Settle it when it's decided.</h3>
+    ${open && (campus() ? S.role === "admin" : m.creator_id === S.me?.id) ? `<div class="panel"><h3>${campus() ? "Campus mod: settle it when it's decided." : "You made this bet. Settle it when it's decided."}</h3>
       <div class="two"><button class="btn ghost" data-res="yes">It happened</button><button class="btn ghost" data-res="no">It didn't</button></div>
       <button class="btn ghost" data-res="void" style="margin-top:10px">Void and refund everyone</button></div>` : ""}
-    ${open && m.creator_id !== S.me?.id && S.group?.created_by === S.me?.id ? `<div class="panel"><h3>Group owner</h3>
+    ${open && !campus() && m.creator_id !== S.me?.id && S.group?.created_by === S.me?.id ? `<div class="panel"><h3>Group owner</h3>
       <p class="muted small" style="margin:0 0 10px">Too far? Void it and everyone gets their coins back.</p>
       <button class="btn ghost" data-res="void">Void this bet</button></div>` : ""}
     <div class="panel"><h3>Who's betting</h3><div class="list feed">${data.trades.length ? data.trades.map((t) => {
@@ -404,9 +492,21 @@ async function renderMarket(soft) {
       return `<div class="it"><div>${t.insider ? "🚨 " : ""}<b>${esc(t.user)}</b> ${t.side.startsWith("buy") ? `bet ${fmt(t.coins)} on <b class="${side}">${side.toUpperCase()}</b>` : `cashed out ${fmt(-t.coins)}`}</div>
         <div class="muted">→ ${pct(t.price_after)}% · ${ago(t.at)}${t.insider ? " · insider trading" : ""}</div></div>`;
     }).join("") : `<div class="muted small">Nobody yet. First bet sets the line.</div>`}</div></div>
+    ${campus() ? `<button class="btn ghost small" id="report" style="margin-top:14px">Report this market</button>` : ""}
+    ${campus() && open ? `<p class="small muted">A campus mod settles this when the result is public.</p>` : ""}
   </div>
   <button class="btn fab" id="share">Send to the group chat</button>`;
   if (soft) window.scrollTo(0, scroll);
+  const report = document.getElementById("report");
+  if (report) report.onclick = () => {
+    sheet(`<h2>Report this market</h2><p class="muted small">Mods review reports. Markets about a specific person, harassment or spam get voided.</p>
+      <input class="field" id="why" maxlength="200" placeholder="What's wrong with it?"><div style="height:12px"></div><button class="btn" id="rp">Send report</button>`, (el, close) => {
+      el.querySelector("#rp").onclick = async () => {
+        try { await api("POST", `/api/groups/${code}/markets/${m.id}/report`, { reason: el.querySelector("#why").value || "reported" }); close(); toast("Reported. A mod will look."); }
+        catch (e) { toast(e.message, true); }
+      };
+    });
+  };
   document.getElementById("share").onclick = async () => {
     const url = `${location.origin}/g/${code}/m/${m.id}`;
     const text = m.status === "open" ? `${pct(m.chance)}% chance: ${m.question}` : `${m.question} → ${m.outcome.toUpperCase()}`;
